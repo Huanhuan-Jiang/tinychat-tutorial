@@ -30,3 +30,5 @@ demo
 profile_*
 !profile_*.cc
 libtorch/
+LLaMA_7B_2_chat
+/build
