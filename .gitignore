@@ -32,3 +32,4 @@ profile_*
 libtorch/
 LLaMA_7B_2_chat
 /build
+chat
