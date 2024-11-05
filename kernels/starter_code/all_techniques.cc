@@ -66,10 +66,33 @@ static void *all_techniques_worker_func(void *args) {
                 // (3) use `vreinterpretq_s8_u8` to interpret the  vector as int8
                 // lowbit mask
                 const uint8x16_t mask_low4bit = vdupq_n_u8(0xf);
+                auto w0_low_int8 = vreinterpretq_s8_u8(vandq_u8(w0, mask_low4bit));
+                auto w0_high_int8 = vreinterpretq_s8_u8(vshrq_n_u8(w0, 4));
+
+                auto w1_low_int8 = vreinterpretq_s8_u8(vandq_u8(w1, mask_low4bit));
+                auto w1_high_int8 = vreinterpretq_s8_u8(vshrq_n_u8(w1, 4));
+
+                auto w2_low_int8 = vreinterpretq_s8_u8(vandq_u8(w2, mask_low4bit));
+                auto w2_high_int8 = vreinterpretq_s8_u8(vshrq_n_u8(w2, 4));
+
+                auto w3_low_int8 = vreinterpretq_s8_u8(vandq_u8(w3, mask_low4bit));
+                auto w3_high_int8 = vreinterpretq_s8_u8(vshrq_n_u8(w3, 4));
 
                 // TODO: apply zero_point to weights and convert the range from (0, 15) to (-8, 7)
                 // Hint: using `vsubq_s8` to the lower-half and upper-half vectors of weights
                 const int8x16_t offsets = vdupq_n_s8(8);
+                w0_low_converted = vsubq_s8(w0_low_int8, offsets);
+                w0_high_converted = vsubq_s8(w0_high_int8, offsets);
+
+                w1_low_converted = vsubq_s8(w1_low_int8, offsets);
+                w1_high_converted = vsubq_s8(w1_high_int8, offsets);
+
+                w2_low_converted = vsubq_s8(w2_low_int8, offsets);
+                w2_high_converted = vsubq_s8(w2_high_int8, offsets);
+
+
+                w3_low_converted = vsubq_s8(w3_low_int8, offsets);
+                w3_high_converted = vsubq_s8(w3_high_int8, offsets);
 
                 // load 128 8-bit activation
                 const int8x16_t a0 = vld1q_s8(a_start);
@@ -85,6 +108,17 @@ static void *all_techniques_worker_func(void *args) {
                 // TODO: perform dot product and store the result into the intermediate sum, int_sum0
                 // Hint: use `vdotq_s32` and store the sum for each block in int_sum{0-3}
                 int32x4_t int_sum0, int_sum1, int_sum2, int_sum3;
+                int_sum0 = vdotq_s32(a0, w0_low_converted);
+                int_sum0 += vdotq_s32(a1, w0_high_converted);
+
+                int_sum1 = vdotq_s32(a2, w1_low_converted);
+                int_sum1 += vdotq_s32(a3, w1_high_converted);
+
+                int_sum2 = vdotq_s32(a4, w2_low_converted);
+                int_sum2 += vdotq_s32(a5, w2_high_converted);
+
+                int_sum3 = vdotq_s32(a6, w3_low_converted);
+                int_sum3 += vdotq_s32(a7, w3_high_converted);
 
                 float s_0 = *s_a++ * *s_w++;
                 float s_1 = *s_a++ * *s_w++;
@@ -126,6 +160,11 @@ static void *all_techniques_worker_func(void *args) {
                 __m256i raw_w = _mm256_loadu_si256(w_start);
                 __m256i raw_w_next = _mm256_loadu_si256(w_start + 1);
 
+                __m256i w_low = _mm256_and_si256(raw_w, lowMask);
+               __m256i w_high = _mm256_and_si256(_mm256_srli_epi16(raw_w, 4), lowMask);
+               __m256i w_low_next = _mm256_and_si256(raw_w_next, lowMask);
+               __m256i w_high_next = _mm256_and_si256(_mm256_srli_epi16(raw_w_next, 4), lowMask);
+
                 // TODO: apply zero_point to weights and convert the range from (0, 15) to (-8, 7)
                 // Hint: using `_mm256_sub_epi8` to the lower-half and upper-half vectors of weights
                 // Note: For the first two blocks, store the lower half and upper half of weights into `w_0` and
@@ -133,6 +172,10 @@ static void *all_techniques_worker_func(void *args) {
                 // `w_0_next` and `w_128_next`, respectively
                 const __m256i zero_point = _mm256_set1_epi8(8);
                 __m256i w_0, w_128, w_0_next, w_128_next;
+                w_0 = _mm256_sub_epi8(w_low, zero_point);
+                w_128 = _mm256_sub_epi8(w_high, zero_point);
+                w_0_next = _mm256_sub_epi8(w_low_next, zero_point);
+                w_128_next = _mm256_sub_epi8(w_high_next, zero_point);
 
                 // Perform int8 dot product with _mm256_maddubs_epi16
                 /* Syntax of _mm256_maddubs_epi16:
@@ -169,6 +212,10 @@ static void *all_techniques_worker_func(void *args) {
                 // dot2 = ax2 * sy2
                 // dot3 = ax_next * sy_next
                 // dot4 = ax2_next * sy2_next
+                dot = _mm256_maddubs_epi16(ax, sy);
+                dot2 = _mm256_maddubs_epi16(ax2, sy2);
+                dot3 = _mm256_maddubs_epi16(ax_next, sy_next);
+                dot4 = _mm256_maddubs_epi16(ax2_next, sy2_next);
 
                 // Convert int32 vectors to floating point vectors
                 const __m256i ones = _mm256_set1_epi16(1);
@@ -222,7 +269,16 @@ void MatmulOperator::mat_mul_all_techniques(struct matmul_params *params) {
     assert(params->block_size == 32);  // support block size 32 for now
 
     // TODO: Thread creation
+    for (auto i = 0; i < num_thread; i++) {
+        threads_args[i].start_j = i * (C->column / num_thread);
+        threads_args[i].end_j = (i + 1) * (C->column / num_thread);
+        threads_args[i].params = params;
+        pthread_create(&thread_pool[i], nullptr, all_techniques_worker_func, &threads_args[i]);
+    }
 
     // TODO: Join threads
+    for (int i = 0; i < num_thread; i++) {
+        pthread_join(thread_pool[i], nullptr);
+    }
 };
 }  // namespace matmul
